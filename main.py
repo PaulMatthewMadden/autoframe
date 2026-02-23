@@ -70,51 +70,101 @@ class POCSystem:
         self.cooldown_until = 0 
         
         self.last_start_time = None
-        self.playback_clip = None # Stores the current looping clip
+        self.event_end_time = None # Track end of padding phase
+        
+        self.playback_clip = None 
+        self.playback_idx = 0
+        self.playback_start_wall = 0
+        
+        self.frame_intervals = deque(maxlen=30)
+        self.measured_fps = 0.0
+
+    def print_characteristics(self):
+        print("\n" + "="*50)
+        print("           SYSTEM CHARACTERISTICS")
+        print("="*50)
+        print("1. DEVICE INFO")
+        print(f"   - Index: {self.index}")
+        print("   - Name:  DSHOW (MSMF)")
+        print("\n2. BUFFER METRICS")
+        print(f"   - Res:   {CAP_W}x{CAP_H}")
+        print(f"   - FPS:   {TARGET_FPS}")
+        print(f"   - Cap:   {BUFFER_SEC}s ({MAX_FRAMES} f)")
+        print("\n3. LIVE FEED METRICS")
+        print(f"   - Res:   {LIVE_W}x{LIVE_H}")
+        print(f"   - Inp:   {self.measured_fps:.2f} FPS")
+        print("="*50 + "\n")
 
     def start(self):
         self.running = True
         threading.Thread(target=self._capture_loop, daemon=True).start()
-        threading.Thread(target=self._playback_loop, daemon=True).start()
         return self
 
     def _capture_loop(self):
         last_motion_check = 0
+        last_t = time.perf_counter()
         while self.running:
             success, frame = self.cap.read()
             if success:
                 now = time.perf_counter()
+                self.frame_intervals.append(now - last_t)
+                last_t = now
+                if len(self.frame_intervals) > 0:
+                    self.measured_fps = 1.0 / (sum(self.frame_intervals)/len(self.frame_intervals))
+
                 small = cv2.resize(frame, (LIVE_W, LIVE_H))
                 gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
                 start_flag, end_flag = False, False
                 
                 if now > self.cooldown_until:
-                    self.cooldown_message = ""
-                    if now - last_motion_check >= MOTION_INTERVAL:
-                        sx, sy, sw, sh = self.roi_start.x, self.roi_start.y, self.roi_start.w, self.roi_start.h
-                        if self.roi_start.detect_motion(gray[max(0,sy):min(LIVE_H,sy+sh), max(0,sx):min(LIVE_W,sx+sw)]):
-                            start_flag = True
-                            self.is_triggered = True
-                            self.last_start_time = now # Track for padding
-                            self.status_message = "Action Triggered"
+                    # Reset after cooldown finishes
+                    if self.cooldown_message != "":
+                        self.cooldown_message = ""
+                        self.status_message = "Waiting..."
+                        self.is_triggered = False 
+                        self.last_start_time = None
+                        self.event_end_time = None
+                        self.roi_start.last_roi_frame = None
+                        self.roi_end.last_roi_frame = None
 
-                        if self.is_triggered:
-                            ex, ey, ew, eh = self.roi_end.x, self.roi_end.y, self.roi_end.w, self.roi_end.h
-                            if self.roi_end.detect_motion(gray[max(0,ey):min(LIVE_H,ey+eh), max(0,ex):min(LIVE_W,ex+ew)]):
-                                end_flag = True
-                                self.is_triggered = False
+                    if now - last_motion_check >= MOTION_INTERVAL:
+                        # 1. Padding Phase Check: Wait until POST_ACTION_PAD is captured
+                        if self.event_end_time:
+                            if now >= self.event_end_time:
                                 self.status_message = "Playback Started"
                                 self.cooldown_until = now + POST_CAPTURE_WAIT
+                                # Extract clip using stored timestamps
+                                self._create_playback_clip(self.last_start_time - PRE_ACTION_PAD, self.event_end_time)
                                 
-                                # Extract clip with padding
-                                self._create_playback_clip(self.last_start_time - PRE_ACTION_PAD, now + POST_ACTION_PAD)
-                                
-                                # Clear all flags in buffer
+                                # Clear marked flags in rolling buffer
                                 with self.lock:
                                     temp_list = list(self.buffer)
                                     self.buffer.clear()
                                     for t, f, _, _ in temp_list:
                                         self.buffer.append((t, f, False, False))
+                                
+                                self.event_end_time = None
+                                self.is_triggered = False
+
+                        # 2. Normal Detection Mode
+                        else:
+                            # Update Start ROI to always grab LATEST motion
+                            sx, sy, sw, sh = self.roi_start.x, self.roi_start.y, self.roi_start.w, self.roi_start.h
+                            if self.roi_start.detect_motion(gray[max(0,sy):min(LIVE_H,sy+sh), max(0,sx):min(LIVE_W,sx+sw)]):
+                                start_flag = True
+                                self.is_triggered = True
+                                self.last_start_time = now
+                                self.status_message = "Action Triggered"
+
+                            # Check End ROI only if system was triggered
+                            if self.is_triggered:
+                                ex, ey, ew, eh = self.roi_end.x, self.roi_end.y, self.roi_end.w, self.roi_end.h
+                                if self.roi_end.detect_motion(gray[max(0,ey):min(LIVE_H,ey+eh), max(0,ex):min(LIVE_W,ex+ew)]):
+                                    end_flag = True
+                                    # Start the padding phase
+                                    self.event_end_time = now + POST_ACTION_PAD
+                                    self.status_message = "Finishing Capture..."
+                        
                         last_motion_check = now
                 else:
                     self.cooldown_message = f"Cooldown: {int(self.cooldown_until - now)}s"
@@ -127,27 +177,11 @@ class POCSystem:
                 time.sleep(0.001)
 
     def _create_playback_clip(self, start_t, end_t):
-        """Copies relevant frames from the rolling buffer to a separate list"""
         with self.lock:
             current_buffer = list(self.buffer)
             self.playback_clip = [f for f in current_buffer if start_t <= f[0] <= end_t]
-
-    def _playback_loop(self):
-        """Dedicated thread to loop the last captured clip"""
-        while self.running:
-            if self.playback_clip and len(self.playback_clip) > 0:
-                cv2.namedWindow("Auto Playback", cv2.WINDOW_NORMAL)
-                clip = list(self.playback_clip)
-                start_wall, start_frame = time.perf_counter(), clip[0][0]
-                
-                for ts, frame, _, _ in clip:
-                    # Sync playback speed to real-time
-                    while (time.perf_counter() - start_wall) < (ts - start_frame):
-                        time.sleep(0.005)
-                    cv2.imshow("Auto Playback", frame)
-                    if cv2.waitKey(1) & 0xFF == ord('c'): break
-            else:
-                time.sleep(0.1)
+            self.playback_idx = 0
+            self.playback_start_wall = time.perf_counter()
 
     def get_latest(self):
         with self.lock:
@@ -159,7 +193,7 @@ class POCSystem:
         self.running = False
         self.cap.release()
 
-# Global UI Logic
+# Global UI Setup
 roi_start = ROI(50, 50, 100, 100, (0, 255, 0), "START", START_SENSITIVITY)
 roi_end = ROI(200, 50, 100, 100, (0, 0, 255), "END", END_SENSITIVITY)
 active_roi = None
@@ -181,6 +215,9 @@ def mouse_event(event, x, y, flags, param):
 
 if __name__ == "__main__":
     system = POCSystem(1, roi_start, roi_end).start()
+    time.sleep(1.5)
+    system.print_characteristics()
+    
     cv2.namedWindow("Live Feed")
     cv2.setMouseCallback("Live Feed", mouse_event)
     
@@ -195,14 +232,29 @@ if __name__ == "__main__":
         img = system.get_latest()
         if img is not None:
             roi_start.draw(img); roi_end.draw(img)
-            # Display Status and Cooldown separately
             cv2.putText(img, system.status_message, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
             if system.cooldown_message:
                 cv2.putText(img, system.cooldown_message, (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
             cv2.putText(img, ram_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             cv2.imshow("Live Feed", img)
 
-        if cv2.waitKey(20) & 0xFF == ord('q'): break
+        if system.playback_clip:
+            cv2.namedWindow("Auto Playback", cv2.WINDOW_NORMAL)
+            # Resize window to CAP_W, CAP_H
+            cv2.resizeWindow("Auto Playback", CAP_W, CAP_H) 
+            
+            clip = system.playback_clip
+            target_frame = clip[system.playback_idx]
+            elapsed_needed = target_frame[0] - clip[0][0]
+            
+            if (time.perf_counter() - system.playback_start_wall) >= elapsed_needed:
+                cv2.imshow("Auto Playback", target_frame[1])
+                system.playback_idx += 1
+                if system.playback_idx >= len(clip):
+                    system.playback_idx = 0
+                    system.playback_start_wall = time.perf_counter()
+
+        if cv2.waitKey(1) & 0xFF == ord('q'): break
 
     system.stop()
     cv2.destroyAllWindows()
