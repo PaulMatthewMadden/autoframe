@@ -5,7 +5,8 @@ from collections import deque
 from pygrabber.dshow_graph import FilterGraph
 
 # --- SETTINGS ---
-W, H = 640, 480
+# W, H = 640, 480
+W, H = 1280, 720
 TARGET_FPS = 30
 BUFFER_SECONDS = 30
 MAX_BUFFER = TARGET_FPS * BUFFER_SECONDS
