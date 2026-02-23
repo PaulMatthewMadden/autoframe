@@ -1,58 +1,98 @@
 import cv2
+import threading
 import time
+from collections import deque
+from pygrabber.dshow_graph import FilterGraph
 
-def list_cameras():
-    index = 0
-    available_cameras = []
+# --- SETTINGS ---
+W, H = 640, 480
+TARGET_FPS = 30
+BUFFER_SECONDS = 30
+MAX_BUFFER = TARGET_FPS * BUFFER_SECONDS
+
+class AutoFrameSystem:
+    def __init__(self, index):
+        self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, W)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, H)
+        self.cap.set(cv2.CAP_PROP_FPS, TARGET_FPS)
+        
+        # Exposure lock (as tested)
+        self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+        self.cap.set(cv2.CAP_PROP_EXPOSURE, -5)
+
+        # The 30-second memory bank
+        self.buffer = deque(maxlen=MAX_BUFFER)
+        
+        self.frame = None
+        self.running = False
+        self.lock = threading.Lock()
+
+    def start(self):
+        self.running = True
+        threading.Thread(target=self._capture_loop, daemon=True).start()
+        return self
+
+    def _capture_loop(self):
+        """Hardware interaction thread"""
+        while self.running:
+            success, img = self.cap.read()
+            if success:
+                # Store in memory for the live feed and the buffer
+                with self.lock:
+                    self.frame = img
+                self.buffer.append(img.copy())
+
+    def get_frame(self):
+        with self.lock:
+            return self.frame
+
+    def stop(self):
+        self.running = False
+        self.cap.release()
+
+if __name__ == "__main__":
+    # Standard camera selection
+    graph = FilterGraph()
+    devices = graph.get_input_devices()
+    for i, name in enumerate(devices): print(f"[{i}]: {name}")
+    idx = int(input("Select Index: "))
+
+    system = AutoFrameSystem(idx).start()
+    
+    last_time = time.time()
+    
+    print("System Running. Press 'p' for instant replay, 'q' to quit.")
+
     while True:
-        # Try to open the camera
-        cap = cv2.VideoCapture(index)
-        if cap.isOpened():
-            available_cameras.append(index)
-            cap.release()  # Release the camera if opened
-        else:
-            break  # No more cameras found
-        index += 1
-    
-    return available_cameras
+        frame = system.get_frame()
+        
+        if frame is not None:
+            # CPU GOVERNOR: 
+            # We only process/display at the speed of the target FPS
+            # This will drop your CPU usage from 60% back to ~10-15%
+            now = time.time()
+            if (now - last_time) < (1.0 / TARGET_FPS):
+                continue
+            
+            actual_fps = 1.0 / (now - last_time)
+            last_time = now
 
-# Get the list of cameras
-cameras = list_cameras()
+            # Show the live feed
+            display_frame = frame.copy()
+            cv2.putText(display_frame, f"Live FPS: {actual_fps:.1f}", (10, 30), 1, 1.5, (0,255,0), 2)
+            cv2.putText(display_frame, f"Memory: {len(system.buffer)} frames", (10, 60), 1, 1, (255,255,255), 1)
+            cv2.imshow("AutoFrame - Live", display_frame)
 
-if not cameras:
-    print("No cameras found.")
-else:
-    print("Available cameras and their indices:")
-    for cam in cameras:
-        print(f"Camera Index: {cam}")
-
-    # Choose a camera index to use
-    selected_camera = cameras[0]  # You can modify this to choose a different camera
-    print(f"\nUsing Camera Index: {selected_camera}")
-    
-    # Initialize video capture from the selected camera
-    cap = cv2.VideoCapture(selected_camera)
-
-    # Define codec and create VideoWriter object
-    fourcc = cv2.VideoWriter_fourcc(*'H264')  # H.264 codec
-    out = cv2.VideoWriter(r'C:\Users\paul\Documents\Temp\test_vid_01.mkv', fourcc, 30.0, (int(cap.get(3)), int(cap.get(4))))
-    
-    # Record for 5 seconds
-    start_time = time.time()
-    while time.time() - start_time < 5:
-        ret, frame = cap.read()
-        if ret:
-            out.write(frame)  # Write the frame to the video file
-            cv2.imshow('Recording', frame)  # (Optional) Show the frame being recorded
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-        else:
-            print("Error reading from camera.")
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
             break
+        elif key == ord('p'):
+            # REPLAY TEST: If we have at least 2 seconds of video, show a frame from 2s ago
+            if len(system.buffer) > 60:
+                past_frame = system.buffer[-60]
+                cv2.imshow("2-Second Replay", past_frame)
 
-    # Release everything
-    cap.release()
-    out.release()
+    system.stop()
     cv2.destroyAllWindows()
-    print("Recording complete.")
-
