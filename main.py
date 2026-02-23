@@ -4,6 +4,8 @@ import time
 import psutil
 from collections import deque
 import numpy as np
+import sys
+from pygrabber.dshow_graph import FilterGraph # Requires: pip install pygrabber
 
 # --- CONFIG ---
 CAP_W, CAP_H = 1280, 720      
@@ -48,8 +50,9 @@ class ROI:
         return motion_score > self.sensitivity
 
 class POCSystem:
-    def __init__(self, index, r_start, r_end):
+    def __init__(self, index, name, r_start, r_end):
         self.index = index
+        self.device_name = name
         self.roi_start = r_start
         self.roi_end = r_end
         self.cap = cv2.VideoCapture(index, cv2.CAP_MSMF)
@@ -68,14 +71,11 @@ class POCSystem:
         self.cooldown_message = ""
         self.is_triggered = False 
         self.cooldown_until = 0 
-        
         self.last_start_time = None
-        self.event_end_time = None # Track end of padding phase
-        
+        self.event_end_time = None 
         self.playback_clip = None 
         self.playback_idx = 0
         self.playback_start_wall = 0
-        
         self.frame_intervals = deque(maxlen=30)
         self.measured_fps = 0.0
 
@@ -84,15 +84,14 @@ class POCSystem:
         print("           SYSTEM CHARACTERISTICS")
         print("="*50)
         print("1. DEVICE INFO")
-        print(f"   - Index: {self.index}")
-        print("   - Name:  DSHOW (MSMF)")
+        print(f"   - Selected: [{self.index}] {self.device_name}")
         print("\n2. BUFFER METRICS")
-        print(f"   - Res:   {CAP_W}x{CAP_H}")
-        print(f"   - FPS:   {TARGET_FPS}")
-        print(f"   - Cap:   {BUFFER_SEC}s ({MAX_FRAMES} f)")
+        print(f"   - Res:      {CAP_W}x{CAP_H}")
+        print(f"   - Target:   {TARGET_FPS} FPS")
+        print(f"   - Capacity: {BUFFER_SEC}s ({MAX_FRAMES} f)")
         print("\n3. LIVE FEED METRICS")
-        print(f"   - Res:   {LIVE_W}x{LIVE_H}")
-        print(f"   - Inp:   {self.measured_fps:.2f} FPS")
+        print(f"   - Res:      {LIVE_W}x{LIVE_H}")
+        print(f"   - Actual:   {self.measured_fps:.2f} FPS")
         print("="*50 + "\n")
 
     def start(self):
@@ -114,10 +113,8 @@ class POCSystem:
 
                 small = cv2.resize(frame, (LIVE_W, LIVE_H))
                 gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-                start_flag, end_flag = False, False
                 
                 if now > self.cooldown_until:
-                    # Reset after cooldown finishes
                     if self.cooldown_message != "":
                         self.cooldown_message = ""
                         self.status_message = "Waiting..."
@@ -128,48 +125,35 @@ class POCSystem:
                         self.roi_end.last_roi_frame = None
 
                     if now - last_motion_check >= MOTION_INTERVAL:
-                        # 1. Padding Phase Check: Wait until POST_ACTION_PAD is captured
                         if self.event_end_time:
                             if now >= self.event_end_time:
                                 self.status_message = "Playback Started"
                                 self.cooldown_until = now + POST_CAPTURE_WAIT
-                                # Extract clip using stored timestamps
                                 self._create_playback_clip(self.last_start_time - PRE_ACTION_PAD, self.event_end_time)
-                                
-                                # Clear marked flags in rolling buffer
                                 with self.lock:
                                     temp_list = list(self.buffer)
                                     self.buffer.clear()
-                                    for t, f, _, _ in temp_list:
-                                        self.buffer.append((t, f, False, False))
-                                
+                                    for t, f, _, _ in temp_list: self.buffer.append((t, f, False, False))
                                 self.event_end_time = None
                                 self.is_triggered = False
 
-                        # 2. Normal Detection Mode
                         else:
-                            # Update Start ROI to always grab LATEST motion
                             sx, sy, sw, sh = self.roi_start.x, self.roi_start.y, self.roi_start.w, self.roi_start.h
                             if self.roi_start.detect_motion(gray[max(0,sy):min(LIVE_H,sy+sh), max(0,sx):min(LIVE_W,sx+sw)]):
-                                start_flag = True
                                 self.is_triggered = True
                                 self.last_start_time = now
                                 self.status_message = "Action Triggered"
 
-                            # Check End ROI only if system was triggered
                             if self.is_triggered:
                                 ex, ey, ew, eh = self.roi_end.x, self.roi_end.y, self.roi_end.w, self.roi_end.h
                                 if self.roi_end.detect_motion(gray[max(0,ey):min(LIVE_H,ey+eh), max(0,ex):min(LIVE_W,ex+ew)]):
-                                    end_flag = True
-                                    # Start the padding phase
                                     self.event_end_time = now + POST_ACTION_PAD
                                     self.status_message = "Finishing Capture..."
-                        
                         last_motion_check = now
                 else:
                     self.cooldown_message = f"Cooldown: {int(self.cooldown_until - now)}s"
 
-                self.buffer.append((now, frame, start_flag, end_flag))
+                self.buffer.append((now, frame, False, False))
                 with self.lock:
                     self.live_proxy = small
                     self.new_frame_available = True
@@ -193,6 +177,11 @@ class POCSystem:
         self.running = False
         self.cap.release()
 
+def get_friendly_camera_list():
+    """Queries Windows DirectShow for real hardware names."""
+    devices = FilterGraph().get_input_devices()
+    return devices
+
 # Global UI Setup
 roi_start = ROI(50, 50, 100, 100, (0, 255, 0), "START", START_SENSITIVITY)
 roi_end = ROI(200, 50, 100, 100, (0, 0, 255), "END", END_SENSITIVITY)
@@ -214,7 +203,30 @@ def mouse_event(event, x, y, flags, param):
         if active_roi: active_roi.dragging = active_roi.resizing = False; active_roi = None
 
 if __name__ == "__main__":
-    system = POCSystem(1, roi_start, roi_end).start()
+    device_names = get_friendly_camera_list()
+    
+    if not device_names:
+        print("\nERROR: No cameras found.")
+        sys.exit()
+
+    print("\n" + "="*40)
+    print("        CAMERA SELECTION MENU")
+    print("="*40)
+    for i, name in enumerate(device_names):
+        print(f" [{i}] {name}")
+    print("="*40)
+    
+    try:
+        choice = int(input("\nSelect camera number: "))
+        selected_index = choice 
+        selected_name = device_names[choice]
+    except (ValueError, IndexError):
+        print("Invalid choice. Defaulting to [0].")
+        selected_index = 0
+        selected_name = device_names[0]
+
+    system = POCSystem(selected_index, selected_name, roi_start, roi_end).start()
+    
     time.sleep(1.5)
     system.print_characteristics()
     
@@ -222,7 +234,6 @@ if __name__ == "__main__":
     cv2.setMouseCallback("Live Feed", mouse_event)
     
     ram_text, last_sys_update = "RAM: Init...", 0
-
     while True:
         if time.time() - last_sys_update > 1.0:
             ram = psutil.virtual_memory()
@@ -240,13 +251,10 @@ if __name__ == "__main__":
 
         if system.playback_clip:
             cv2.namedWindow("Auto Playback", cv2.WINDOW_NORMAL)
-            # Resize window to CAP_W, CAP_H
             cv2.resizeWindow("Auto Playback", CAP_W, CAP_H) 
-            
             clip = system.playback_clip
             target_frame = clip[system.playback_idx]
             elapsed_needed = target_frame[0] - clip[0][0]
-            
             if (time.perf_counter() - system.playback_start_wall) >= elapsed_needed:
                 cv2.imshow("Auto Playback", target_frame[1])
                 system.playback_idx += 1
