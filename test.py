@@ -7,7 +7,7 @@ from collections import deque
 CAP_W, CAP_H = 1280, 720      
 LIVE_W, LIVE_H = 640, 360     
 TARGET_FPS = 30
-BUFFER_SEC = 20
+BUFFER_SEC = 20  
 MAX_FRAMES = TARGET_FPS * BUFFER_SEC
 
 class POCSystem:
@@ -19,26 +19,27 @@ class POCSystem:
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAP_H)
         self.cap.set(cv2.CAP_PROP_FPS, TARGET_FPS)
         
-        # Get actual hardware specs after initialization
         self.real_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.real_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.real_fps = self.cap.get(cv2.CAP_PROP_FPS)
-
+        
         self.buffer = deque(maxlen=MAX_FRAMES)
         self.live_proxy = None
         self.new_frame_available = False
         self.running = False
         self.lock = threading.Lock()
+        
+        self.measured_fps = 0.0
+        self.frame_intervals = deque(maxlen=30)
 
     def print_debug_info(self):
-        print("\n" + "="*30)
-        print("   CAMERA DEBUG SUMMARY")
-        print("="*30)
-        print(f"1. Camera Index:    {self.index}")
-        print(f"2. Live Feed:       {LIVE_W}x{LIVE_H} @ {TARGET_FPS} FPS")
-        print(f"   (Source: {self.real_w}x{self.real_h} @ {self.real_fps} FPS)")
-        print(f"3. Playback Window: {self.real_w}x{self.real_h} @ 30 FPS")
-        print("="*30 + "\n")
+        print("\n" + "="*40)
+        print("        SYSTEM DEBUG REPORT")
+        print("="*40)
+        print(f"1. Device:             Index {self.index}")
+        print(f"2. Capture Resolution: {self.real_w}x{self.real_h}")
+        print(f"3. Buffer Capacity:    {BUFFER_SEC}s / {MAX_FRAMES} frames")
+        print(f"4. RAM Usage (Est):    ~{(self.real_w*self.real_h*3*MAX_FRAMES)/1e9:.2f} GB")
+        print("="*40 + "\n")
 
     def start(self):
         self.running = True
@@ -46,21 +47,28 @@ class POCSystem:
         return self
 
     def _capture_loop(self):
+        last_t = time.perf_counter()
         while self.running:
             success, frame = self.cap.read()
             if success:
-                self.buffer.append(frame) 
+                now = time.perf_counter()
+                self.buffer.append((now, frame))
+                
+                self.frame_intervals.append(now - last_t)
+                last_t = now
+                if len(self.frame_intervals) > 0:
+                    self.measured_fps = 1.0 / (sum(self.frame_intervals)/len(self.frame_intervals))
+
                 small = cv2.resize(frame, (LIVE_W, LIVE_H))
                 with self.lock:
                     self.live_proxy = small
                     self.new_frame_available = True
             else:
-                time.sleep(0.01)
+                time.sleep(0.001)
 
     def get_latest(self):
         with self.lock:
-            if not self.new_frame_available:
-                return None
+            if not self.new_frame_available: return None
             self.new_frame_available = False
             return self.live_proxy
 
@@ -69,35 +77,55 @@ class POCSystem:
         self.cap.release()
 
 if __name__ == "__main__":
-    system = POCSystem(1) # Assuming index 1
+    system = POCSystem(1).start()
+    time.sleep(1) 
     system.print_debug_info()
-    system.start()
     
-    print("Commands: [p] Playback | [q] Quit")
+    print("Commands:")
+    print(" [p] Playback (1x) | [s] Slow-Mo (0.5x)")
+    print(" [q] Quit | [c] Cancel playback")
 
     while True:
-        live_img = system.get_latest()
-        
-        if live_img is not None:
-            cv2.imshow("Live Feed", live_img)
+        img = system.get_latest()
+        if img is not None:
+            cv2.imshow("Live Feed", img)
 
-        key = cv2.waitKey(30) & 0xFF 
+        key = cv2.waitKey(20) & 0xFF
         
         if key == ord('q'):
             break
             
-        elif key == ord('p'):
-            if len(system.buffer) > 0:
-                print(f"Starting Playback: {system.real_w}x{system.real_h} @ 30fps")
-                # Iterate the deque directly for speed
-                for i in range(max(0, len(system.buffer)-150), len(system.buffer)):
-                    cv2.imshow("Playback", system.buffer[i])
-                    # 33ms ensures a smooth 30fps playback
-                    if cv2.waitKey(33) & 0xFF == ord('c'): 
-                        print("Playback cancelled.")
+        elif key in [ord('p'), ord('s')]:
+            speed_mult = 1.0 if key == ord('p') else 0.5
+            
+            if len(system.buffer) > 10:
+                clip = list(system.buffer)
+                
+                # --- KEY CHANGE: CREATE RESIZABLE WINDOW ---
+                cv2.namedWindow("Playback Window", cv2.WINDOW_NORMAL)
+                # You can also set a default size if you want it to start large
+                # cv2.resizeWindow("Playback Window", 1280, 720) 
+
+                start_wall_time = time.perf_counter()
+                start_frame_time = clip[0][0]
+                
+                print(f"Playing at {speed_mult}x. You can now maximize this window!")
+
+                for ts, frame in clip:
+                    target_elapsed = (ts - start_frame_time) / speed_mult
+                    
+                    while (time.perf_counter() - start_wall_time) < target_elapsed:
+                        # Polling waitKey(1) keeps the window UI responsive while waiting
+                        if cv2.waitKey(1) & 0xFF == ord('c'): break
+                    
+                    cv2.imshow("Playback Window", frame)
+                    
+                    # Check for cancel key during frame display
+                    if cv2.waitKey(1) & 0xFF == ord('c'): 
                         break
-                cv2.destroyWindow("Playback")
-                print("Playback finished.")
+                
+                cv2.destroyWindow("Playback Window")
+                print(">>> Playback Complete.")
 
     system.stop()
     cv2.destroyAllWindows()
