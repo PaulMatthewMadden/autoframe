@@ -4,7 +4,6 @@ import time
 from collections import deque
 
 # --- CONFIG ---
-# Try 1280x720, but if it's still choppy, the USB bus might be struggling.
 CAP_W, CAP_H = 1280, 720      
 LIVE_W, LIVE_H = 640, 360     
 TARGET_FPS = 30
@@ -13,24 +12,37 @@ MAX_FRAMES = TARGET_FPS * BUFFER_SEC
 
 class POCSystem:
     def __init__(self, index):
-        # CHANGE: Try CAP_MSMF instead of CAP_DSHOW for modern Windows performance
+        self.index = index
         self.cap = cv2.VideoCapture(index, cv2.CAP_MSMF)
         self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAP_W)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAP_H)
         self.cap.set(cv2.CAP_PROP_FPS, TARGET_FPS)
         
+        # Get actual hardware specs after initialization
+        self.real_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.real_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.real_fps = self.cap.get(cv2.CAP_PROP_FPS)
+
         self.buffer = deque(maxlen=MAX_FRAMES)
         self.live_proxy = None
-        self.new_frame_available = False # Flag to avoid redundant drawing
+        self.new_frame_available = False
         self.running = False
         self.lock = threading.Lock()
 
+    def print_debug_info(self):
+        print("\n" + "="*30)
+        print("   CAMERA DEBUG SUMMARY")
+        print("="*30)
+        print(f"1. Camera Index:    {self.index}")
+        print(f"2. Live Feed:       {LIVE_W}x{LIVE_H} @ {TARGET_FPS} FPS")
+        print(f"   (Source: {self.real_w}x{self.real_h} @ {self.real_fps} FPS)")
+        print(f"3. Playback Window: {self.real_w}x{self.real_h} @ 30 FPS")
+        print("="*30 + "\n")
+
     def start(self):
         self.running = True
-        # Increase thread priority by making it a daemon
-        t = threading.Thread(target=self._capture_loop, daemon=True)
-        t.start()
+        threading.Thread(target=self._capture_loop, daemon=True).start()
         return self
 
     def _capture_loop(self):
@@ -38,13 +50,11 @@ class POCSystem:
             success, frame = self.cap.read()
             if success:
                 self.buffer.append(frame) 
-                # Optimization: Resize once here
                 small = cv2.resize(frame, (LIVE_W, LIVE_H))
                 with self.lock:
                     self.live_proxy = small
                     self.new_frame_available = True
             else:
-                # If camera fails, don't spin the CPU
                 time.sleep(0.01)
 
     def get_latest(self):
@@ -59,21 +69,18 @@ class POCSystem:
         self.cap.release()
 
 if __name__ == "__main__":
-    system = POCSystem(1).start()
+    system = POCSystem(1) # Assuming index 1
+    system.print_debug_info()
+    system.start()
     
     print("Commands: [p] Playback | [q] Quit")
 
     while True:
-        # 1. Grab the latest frame ONLY if a new one has arrived
         live_img = system.get_latest()
         
         if live_img is not None:
-            # OPTIMIZATION: Stop using .copy(). 
-            # Only draw text if you absolutely have to for the POC.
             cv2.imshow("Live Feed", live_img)
 
-        # 2. Hardcoded wait (yields CPU to the capture thread)
-        # We use 30ms to be slightly faster than the camera (ensures no lag build-up)
         key = cv2.waitKey(30) & 0xFF 
         
         if key == ord('q'):
@@ -81,12 +88,16 @@ if __name__ == "__main__":
             
         elif key == ord('p'):
             if len(system.buffer) > 0:
-                print("Playing Back...")
-                # Avoid long list conversions; just iterate the deque directly
+                print(f"Starting Playback: {system.real_w}x{system.real_h} @ 30fps")
+                # Iterate the deque directly for speed
                 for i in range(max(0, len(system.buffer)-150), len(system.buffer)):
                     cv2.imshow("Playback", system.buffer[i])
-                    if cv2.waitKey(33) & 0xFF == ord('c'): break
+                    # 33ms ensures a smooth 30fps playback
+                    if cv2.waitKey(33) & 0xFF == ord('c'): 
+                        print("Playback cancelled.")
+                        break
                 cv2.destroyWindow("Playback")
+                print("Playback finished.")
 
     system.stop()
     cv2.destroyAllWindows()
