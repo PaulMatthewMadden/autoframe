@@ -24,6 +24,10 @@ POST_CAPTURE_WAIT = 10.0
 PRE_ACTION_PAD = 2.0 
 POST_ACTION_PAD = 2.0 
 
+# Speed multipliers for the playback loop
+# PLAYBACK_LOOP = [1.0, 0.5, 0.25]
+PLAYBACK_LOOP = [1.0, 0.5]
+
 class ROI:
     def __init__(self, x, y, w, h, color, name, sensitivity):
         self.x, self.y, self.w, self.h = x, y, w, h
@@ -73,9 +77,12 @@ class POCSystem:
         self.cooldown_until = 0 
         self.last_start_time = None
         self.event_end_time = None 
+        
         self.playback_clip = None 
         self.playback_idx = 0
         self.playback_start_wall = 0
+        self.playback_speed_idx = 0 # Tracks current index in PLAYBACK_LOOP
+        
         self.frame_intervals = deque(maxlen=30)
         self.measured_fps = 0.0
 
@@ -165,6 +172,7 @@ class POCSystem:
             current_buffer = list(self.buffer)
             self.playback_clip = [f for f in current_buffer if start_t <= f[0] <= end_t]
             self.playback_idx = 0
+            self.playback_speed_idx = 0 # Start with the first speed in loop
             self.playback_start_wall = time.perf_counter()
 
     def get_latest(self):
@@ -178,7 +186,6 @@ class POCSystem:
         self.cap.release()
 
 def get_friendly_camera_list():
-    """Queries Windows DirectShow for real hardware names."""
     devices = FilterGraph().get_input_devices()
     return devices
 
@@ -204,7 +211,6 @@ def mouse_event(event, x, y, flags, param):
 
 if __name__ == "__main__":
     device_names = get_friendly_camera_list()
-    
     if not device_names:
         print("\nERROR: No cameras found.")
         sys.exit()
@@ -226,7 +232,6 @@ if __name__ == "__main__":
         selected_name = device_names[0]
 
     system = POCSystem(selected_index, selected_name, roi_start, roi_end).start()
-    
     time.sleep(1.5)
     system.print_characteristics()
     
@@ -252,14 +257,27 @@ if __name__ == "__main__":
         if system.playback_clip:
             cv2.namedWindow("Auto Playback", cv2.WINDOW_NORMAL)
             cv2.resizeWindow("Auto Playback", CAP_W, CAP_H) 
+            
             clip = system.playback_clip
-            target_frame = clip[system.playback_idx]
-            elapsed_needed = target_frame[0] - clip[0][0]
+            current_speed = PLAYBACK_LOOP[system.playback_speed_idx] #
+            
+            target_frame_data = clip[system.playback_idx]
+            # Calculate elapsed time required based on speed multiplier
+            elapsed_needed = (target_frame_data[0] - clip[0][0]) / current_speed
+            
             if (time.perf_counter() - system.playback_start_wall) >= elapsed_needed:
-                cv2.imshow("Auto Playback", target_frame[1])
+                display_frame = target_frame_data[1].copy()
+                # Draw playback speed on the frame
+                cv2.putText(display_frame, f"Speed: {current_speed}x", (10, 50), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                
+                cv2.imshow("Auto Playback", display_frame)
                 system.playback_idx += 1
+                
+                # Check for end of clip to advance speed or loop back
                 if system.playback_idx >= len(clip):
                     system.playback_idx = 0
+                    system.playback_speed_idx = (system.playback_speed_idx + 1) % len(PLAYBACK_LOOP)
                     system.playback_start_wall = time.perf_counter()
 
         if cv2.waitKey(1) & 0xFF == ord('q'): break
