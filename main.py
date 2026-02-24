@@ -1,11 +1,14 @@
+
 import cv2
 import threading
 import time
 import psutil
-from collections import deque
 import numpy as np
 import sys
-from pygrabber.dshow_graph import FilterGraph # Requires: pip install pygrabber
+import os
+from collections import deque
+from datetime import datetime
+from pygrabber.dshow_graph import FilterGraph 
 
 # --- CONFIG ---
 CAP_W, CAP_H = 1280, 720      
@@ -25,8 +28,12 @@ PRE_ACTION_PAD = 2.0
 POST_ACTION_PAD = 2.0 
 
 # Speed multipliers for the playback loop
-# PLAYBACK_LOOP = [1.0, 0.5, 0.25]
 PLAYBACK_LOOP = [1.0, 0.5]
+PLAYBACK_SPEED_CHG = 0.1
+PLAYBACK_SPEED_MIN = 0.1
+PLAYBACK_SPEED_MAX = 2.0
+
+SAVED_CLIPS_DIR = r"C:\Users\paul\Documents\autoframe\clips"
 
 class ROI:
     def __init__(self, x, y, w, h, color, name, sensitivity):
@@ -69,9 +76,10 @@ class POCSystem:
         self.live_proxy = None
         self.new_frame_available = False
         self.running = False
+        self.is_active = False 
         self.lock = threading.Lock()
         
-        self.status_message = "Waiting..."
+        self.status_message = "Setup - Press (b) to begin action capture" 
         self.cooldown_message = ""
         self.is_triggered = False 
         self.cooldown_until = 0 
@@ -81,10 +89,31 @@ class POCSystem:
         self.playback_clip = None 
         self.playback_idx = 0
         self.playback_start_wall = 0
-        self.playback_speed_idx = 0 # Tracks current index in PLAYBACK_LOOP
+        self.playback_speed_idx = 0 
+        self.playback_current_speed = 1.0
+        self.manual_speed_override = False
+        self.playback_paused = False
         
         self.frame_intervals = deque(maxlen=30)
         self.measured_fps = 0.0
+
+    def activate_capture(self):
+        if not self.is_active:
+            self.is_active = True
+            self.status_message = "Waiting..."
+
+    def reset_to_setup(self):
+        """Resets the system back to the initial Setup state."""
+        self.is_active = False
+        self.is_triggered = False
+        self.cooldown_until = 0
+        self.event_end_time = None
+        self.playback_clip = None
+        self.cooldown_message = ""
+        self.status_message = "Setup - Press (b) to begin action capture"
+        # Clear ROI history to prevent immediate false triggers on next start
+        self.roi_start.last_roi_frame = None
+        self.roi_end.last_roi_frame = None
 
     def print_characteristics(self):
         print("\n" + "="*50)
@@ -121,7 +150,7 @@ class POCSystem:
                 small = cv2.resize(frame, (LIVE_W, LIVE_H))
                 gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
                 
-                if now > self.cooldown_until:
+                if self.is_active and now > self.cooldown_until:
                     if self.cooldown_message != "":
                         self.cooldown_message = ""
                         self.status_message = "Waiting..."
@@ -157,7 +186,7 @@ class POCSystem:
                                     self.event_end_time = now + POST_ACTION_PAD
                                     self.status_message = "Finishing Capture..."
                         last_motion_check = now
-                else:
+                elif self.is_active:
                     self.cooldown_message = f"Cooldown: {int(self.cooldown_until - now)}s"
 
                 self.buffer.append((now, frame, False, False))
@@ -172,8 +201,11 @@ class POCSystem:
             current_buffer = list(self.buffer)
             self.playback_clip = [f for f in current_buffer if start_t <= f[0] <= end_t]
             self.playback_idx = 0
-            self.playback_speed_idx = 0 # Start with the first speed in loop
+            self.playback_speed_idx = 0 
+            self.manual_speed_override = False
+            self.playback_current_speed = PLAYBACK_LOOP[0]
             self.playback_start_wall = time.perf_counter()
+            self.playback_paused = False
 
     def get_latest(self):
         with self.lock:
@@ -186,8 +218,35 @@ class POCSystem:
         self.cap.release()
 
 def get_friendly_camera_list():
-    devices = FilterGraph().get_input_devices()
-    return devices
+    return FilterGraph().get_input_devices()
+def save_playback_clip(clip_data):
+    """Saves the current playback buffer to an MP4 file in a background thread."""
+    if not clip_data:
+        print("Save failed: No clip data available.")
+        return
+
+    if not os.path.exists(SAVED_CLIPS_DIR):
+        os.makedirs(SAVED_CLIPS_DIR)
+
+    # Filename format: autoframe_yyyymmdd_hhmmss.mp4
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"autoframe_{timestamp}.mp4"
+    filepath = os.path.join(SAVED_CLIPS_DIR, filename)
+
+    # Get metadata from the first frame of the clip
+    first_frame = clip_data[0][1]
+    height, width = first_frame.shape[:2]
+    
+    # Define codec and writer
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(filepath, fourcc, TARGET_FPS, (width, height))
+
+    print(f"Saving clip to {filepath}...")
+    for _, frame, _, _ in clip_data:
+        out.write(frame)
+    
+    out.release()
+    print("Save Complete.")
 
 # Global UI Setup
 roi_start = ROI(50, 50, 100, 100, (0, 255, 0), "START", START_SENSITIVITY)
@@ -248,7 +307,8 @@ if __name__ == "__main__":
         img = system.get_latest()
         if img is not None:
             roi_start.draw(img); roi_end.draw(img)
-            cv2.putText(img, system.status_message, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            color = (0, 255, 255) if not system.is_active else (255, 255, 0)
+            cv2.putText(img, system.status_message, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
             if system.cooldown_message:
                 cv2.putText(img, system.cooldown_message, (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
             cv2.putText(img, ram_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
@@ -257,30 +317,77 @@ if __name__ == "__main__":
         if system.playback_clip:
             cv2.namedWindow("Auto Playback", cv2.WINDOW_NORMAL)
             cv2.resizeWindow("Auto Playback", CAP_W, CAP_H) 
-            
             clip = system.playback_clip
-            current_speed = PLAYBACK_LOOP[system.playback_speed_idx] #
             
-            target_frame_data = clip[system.playback_idx]
-            # Calculate elapsed time required based on speed multiplier
-            elapsed_needed = (target_frame_data[0] - clip[0][0]) / current_speed
-            
-            if (time.perf_counter() - system.playback_start_wall) >= elapsed_needed:
-                display_frame = target_frame_data[1].copy()
-                # Draw playback speed on the frame
-                cv2.putText(display_frame, f"Speed: {current_speed}x", (10, 50), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-                
-                cv2.imshow("Auto Playback", display_frame)
-                system.playback_idx += 1
-                
-                # Check for end of clip to advance speed or loop back
-                if system.playback_idx >= len(clip):
-                    system.playback_idx = 0
-                    system.playback_speed_idx = (system.playback_speed_idx + 1) % len(PLAYBACK_LOOP)
-                    system.playback_start_wall = time.perf_counter()
+            if not system.playback_paused:
+                elapsed_needed = (clip[system.playback_idx][0] - clip[0][0]) / system.playback_current_speed
+                if (time.perf_counter() - system.playback_start_wall) >= elapsed_needed:
+                    system.playback_idx += 1
+                    if system.playback_idx >= len(clip):
+                        system.playback_idx = 0
+                        # Only cycle if manual override hasn't been used
+                        if not system.manual_speed_override:
+                            system.playback_speed_idx = (system.playback_speed_idx + 1) % len(PLAYBACK_LOOP)
+                            system.playback_current_speed = PLAYBACK_LOOP[system.playback_speed_idx]
+                        system.playback_start_wall = time.perf_counter()
 
-        if cv2.waitKey(1) & 0xFF == ord('q'): break
+            idx = min(system.playback_idx, len(clip) - 1)
+            display_frame = clip[idx][1].copy()
+            status_txt = f"Speed: {system.playback_current_speed:.1f}x"
+            if system.manual_speed_override:
+                status_txt += " (Manual)"
+            else:
+                status_txt += " (Auto Loop)"
+            if system.playback_paused: status_txt += " [PAUSED]"
+            cv2.putText(display_frame, status_txt, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+            cv2.imshow("Auto Playback", display_frame)
+        else:
+            # If playback was reset, ensure window is closed
+            if cv2.getWindowProperty("Auto Playback", cv2.WND_PROP_VISIBLE) >= 1:
+                cv2.destroyWindow("Auto Playback")
+
+        key = cv2.waitKeyEx(1)
+        if key != -1:
+            key_8 = key & 0xFF
+            if key_8 == ord('q'): break
+            elif key_8 == ord('b'):
+                system.activate_capture()
+            elif key_8 == ord('e'): # End capture and reset to Setup
+                system.reset_to_setup()
+            elif key_8 == ord('s'):
+                if system.playback_clip:
+                    # Run saving in a background thread so it doesn't freeze the UI
+                    threading.Thread(target=save_playback_clip, args=(list(system.playback_clip),), daemon=True).start()
+            elif key_8 == ord('p'):
+                if system.playback_clip:
+                    system.playback_paused = not system.playback_paused
+                    if not system.playback_paused:
+                        offset = (system.playback_clip[system.playback_idx][0] - system.playback_clip[0][0]) / system.playback_current_speed
+                        system.playback_start_wall = time.perf_counter() - offset
+            
+            # Speed Controls
+            elif key_8 == ord(','): # (<) Key
+                if system.playback_clip:
+                    system.manual_speed_override = True
+                    system.playback_current_speed = max(PLAYBACK_SPEED_MIN, system.playback_current_speed - PLAYBACK_SPEED_CHG)
+                    offset = (system.playback_clip[system.playback_idx][0] - system.playback_clip[0][0]) / system.playback_current_speed
+                    system.playback_start_wall = time.perf_counter() - offset
+            elif key_8 == ord('.'): # (>) Key
+                if system.playback_clip:
+                    system.manual_speed_override = True
+                    system.playback_current_speed = min(PLAYBACK_SPEED_MAX, system.playback_current_speed + PLAYBACK_SPEED_CHG)
+                    offset = (system.playback_clip[system.playback_idx][0] - system.playback_clip[0][0]) / system.playback_current_speed
+                    system.playback_start_wall = time.perf_counter() - offset
+
+            # Frame Stepping
+            elif key == 2424832: # Left Arrow
+                if system.playback_clip:
+                    system.playback_paused = True
+                    system.playback_idx = (system.playback_idx - 1) % len(system.playback_clip)
+            elif key == 2555904: # Right Arrow
+                if system.playback_clip:
+                    system.playback_paused = True
+                    system.playback_idx = (system.playback_idx + 1) % len(system.playback_clip)
 
     system.stop()
     cv2.destroyAllWindows()
