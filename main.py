@@ -24,8 +24,8 @@ MOTION_INTERVAL = 0.2
 POST_CAPTURE_WAIT = 10.0 
 
 # Playback Padding
-PRE_ACTION_PAD = 2.0 
-POST_ACTION_PAD = 2.0 
+PRE_ACTION_PAD = 3.0 
+POST_ACTION_PAD = 3.0 
 
 # Speed multipliers for the playback loop
 PLAYBACK_LOOP = [1.0, 0.5]
@@ -128,6 +128,23 @@ class POCSystem:
         print("\n3. LIVE FEED METRICS")
         print(f"   - Res:      {LIVE_W}x{LIVE_H}")
         print(f"   - Actual:   {self.measured_fps:.2f} FPS")
+        print("="*50 + "\n")
+
+    def print_controls(self):
+        print("\n" + "="*50)
+        print("           SYSTEM CONTROLS")
+        print("="*50)
+        print("GENERAL")
+        print(f"   - Quit Autoframe:     [Q]")
+        print(f"   - Begin Capture:      [B]")
+        print(f"   - End Capture:        [E]")
+        print(f"   - Save Current Clip:  [S]")
+        print("PLAYBACK")
+        print(f"   - Pause/Resume:       [P]")
+        print(f"   - Speed Up:           [>]")
+        print(f"   - Slow Down:          [<]")
+        print(f"   - Frame Backward:     [Left Arrow]")
+        print(f"   - Frame Forward:      [Right Arrow]")
         print("="*50 + "\n")
 
     def start(self):
@@ -293,7 +310,8 @@ if __name__ == "__main__":
     system = POCSystem(selected_index, selected_name, roi_start, roi_end).start()
     time.sleep(1.5)
     system.print_characteristics()
-    
+    system.print_controls()
+
     cv2.namedWindow("Live Feed")
     cv2.setMouseCallback("Live Feed", mouse_event)
     
