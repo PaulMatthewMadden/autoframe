@@ -11,21 +11,21 @@ from datetime import datetime
 from pygrabber.dshow_graph import FilterGraph 
 
 # --- CONFIG ---
-CAP_W, CAP_H = 1280, 720      
-LIVE_W, LIVE_H = 640, 360     
+CAP_W, CAP_H = 1280, 720
+LIVE_W, LIVE_H = 640, 360
 TARGET_FPS = 30
-BUFFER_SEC = 20  
+BUFFER_SEC = 20
 MAX_FRAMES = TARGET_FPS * BUFFER_SEC
 
 # Motion Sensitivity
-START_SENSITIVITY = 500  
-END_SENSITIVITY = 700    
-MOTION_INTERVAL = 0.2    
-POST_CAPTURE_WAIT = 10.0 
+START_SENSITIVITY = 50 # Based on a perentage of the ROI area that must change to trigger (e.g., 10% of pixels)
+END_SENSITIVITY = 20 # Based on a perentage of the ROI area that must change to trigger (e.g., 10% of pixels)
+MOTION_INTERVAL = 0.2 # Hom many seconds between motion checks (e.g., 0.1 for 10 checks per second)
+POST_CAPTURE_WAIT = 15.0 
 
 # Playback Padding
-PRE_ACTION_PAD = 3.0 
-POST_ACTION_PAD = 3.0 
+PRE_ACTION_PAD = 3.0 # Seconds to include before the detected start of action (to capture lead-in motion)
+POST_ACTION_PAD = 5.0 # Seconds to continue recording after the detected end of action (to capture follow-through motion)
 
 # Speed multipliers for the playback loop
 PLAYBACK_LOOP = [1.0, 0.5]
@@ -54,10 +54,18 @@ class ROI:
         if self.last_roi_frame is None:
             self.last_roi_frame = current_roi_gray
             return False
+            
         diff = cv2.absdiff(self.last_roi_frame, current_roi_gray)
         _, thresh = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
         motion_score = cv2.countNonZero(thresh)
         self.last_roi_frame = current_roi_gray
+        
+        # Calculate what percentage of the ROI moved
+        roi_area = self.w * self.h
+        motion_percent = (motion_score / roi_area) * 100
+        
+        # If using the original code, lower END_SENSITIVITY to ~50-100 
+        # or use a percentage threshold (e.g., > 10%)
         return motion_score > self.sensitivity
 
 class POCSystem:
