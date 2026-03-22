@@ -1,4 +1,3 @@
-
 import cv2
 import threading
 import time
@@ -20,7 +19,7 @@ MAX_FRAMES = TARGET_FPS * BUFFER_SEC
 # Motion Sensitivity
 START_SENSITIVITY = 50 # Based on a perentage of the ROI area that must change to trigger (e.g., 10% of pixels)
 END_SENSITIVITY = 20 # Based on a perentage of the ROI area that must change to trigger (e.g., 10% of pixels)
-MOTION_INTERVAL = 0.2 # Hom many seconds between motion checks (e.g., 0.1 for 10 checks per second)
+MOTION_INTERVAL = 0.5 # Hom many seconds between motion checks (e.g., 0.1 for 10 checks per second)
 POST_CAPTURE_WAIT = 15.0 
 
 # Playback Padding
@@ -44,10 +43,17 @@ class ROI:
         self.dragging = False
         self.resizing = False
         self.last_roi_frame = None
+        self.current_percent = 0.0  # Added for the live meter
 
     def draw(self, img):
+        # Draw the main bounding box
         cv2.rectangle(img, (self.x, self.y), (self.x + self.w, self.y + self.h), self.color, 2)
-        cv2.putText(img, f"{self.name}", (self.x, self.y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.color, 1)
+        
+        # Display name and the live motion meter (e.g., "START: 1.2% / 5.0%")
+        label = f"{self.name}: {self.current_percent:.1f}% / {self.sensitivity}%"
+        cv2.putText(img, label, (self.x, self.y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.color, 1)
+        
+        # Draw the resize handle (bottom-right corner)
         cv2.rectangle(img, (self.x + self.w - 10, self.y + self.h - 10), (self.x + self.w, self.y + self.h), self.color, -1)
 
     def detect_motion(self, current_roi_gray):
@@ -60,13 +66,15 @@ class ROI:
         motion_score = cv2.countNonZero(thresh)
         self.last_roi_frame = current_roi_gray
         
-        # Calculate what percentage of the ROI moved
+        # Calculate percentage of ROI area that changed
         roi_area = self.w * self.h
-        if roi_area == 0: return False # Prevent division by zero
-        motion_percent = (motion_score / roi_area) * 100
+        if roi_area == 0: 
+            return False
+            
+        self.current_percent = (motion_score / roi_area) * 100
         
-        # Return True if the percentage of change exceeds the sensitivity threshold
-        return motion_percent > self.sensitivity
+        # Trigger if current motion exceeds sensitivity percentage
+        return self.current_percent > self.sensitivity
 
 class POCSystem:
     def __init__(self, index, name, r_start, r_end):
