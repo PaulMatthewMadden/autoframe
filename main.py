@@ -62,11 +62,11 @@ class ROI:
         
         # Calculate what percentage of the ROI moved
         roi_area = self.w * self.h
+        if roi_area == 0: return False # Prevent division by zero
         motion_percent = (motion_score / roi_area) * 100
         
-        # If using the original code, lower END_SENSITIVITY to ~50-100 
-        # or use a percentage threshold (e.g., > 10%)
-        return motion_score > self.sensitivity
+        # Return True if the percentage of change exceeds the sensitivity threshold
+        return motion_percent > self.sensitivity
 
 class POCSystem:
     def __init__(self, index, name, r_start, r_end):
