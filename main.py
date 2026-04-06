@@ -13,18 +13,23 @@ from pygrabber.dshow_graph import FilterGraph
 CAP_W, CAP_H = 1280, 720
 LIVE_W, LIVE_H = 640, 360
 TARGET_FPS = 30
-BUFFER_SEC = 20
+BUFFER_SEC = 15
 MAX_FRAMES = TARGET_FPS * BUFFER_SEC
 
+# Action Trigger Behavior
+ACTION_TRIGGER = "start_roi_first_motion"
+
 # Motion Sensitivity
-START_SENSITIVITY = 50 # Based on a perentage of the ROI area that must change to trigger (e.g., 10% of pixels)
-END_SENSITIVITY = 20 # Based on a perentage of the ROI area that must change to trigger (e.g., 10% of pixels)
-MOTION_INTERVAL = 0.5 # Hom many seconds between motion checks (e.g., 0.1 for 10 checks per second)
-POST_CAPTURE_WAIT = 15.0 
+START_SENSITIVITY = 20 # Based on a perentage of the ROI area that must change to trigger (e.g., 10% of pixels)
+END_SENSITIVITY = 10 # Based on a perentage of the ROI area that must change to trigger (e.g., 10% of pixels)
+MOTION_INTERVAL = 0.2 # Hom many seconds between motion checks (e.g., 0.1 for 10 checks per second)
+POST_CAPTURE_WAIT = 12.0 
 
 # Playback Padding
-PRE_ACTION_PAD = 3.0 # Seconds to include before the detected start of action (to capture lead-in motion)
-POST_ACTION_PAD = 5.0 # Seconds to continue recording after the detected end of action (to capture follow-through motion)
+# -1.0 PRE and -4.0 POST are good starting points when using ACTION_TRIGGER = "start_roi_first_motion"
+# 2.0 PRE and 4.0 POST are good starting points when using ACTION_TRIGGER = "start_roi_last_motion"
+PRE_ACTION_PAD = -1.0 # Seconds to include before the detected start of action (to capture lead-in motion)
+POST_ACTION_PAD = -4.0 # Seconds to continue recording after the detected end of action (to capture follow-through motion)
 
 # Speed multipliers for the playback loop
 PLAYBACK_LOOP = [1.0, 0.5]
@@ -208,10 +213,16 @@ class POCSystem:
 
                         else:
                             sx, sy, sw, sh = self.roi_start.x, self.roi_start.y, self.roi_start.w, self.roi_start.h
-                            if self.roi_start.detect_motion(gray[max(0,sy):min(LIVE_H,sy+sh), max(0,sx):min(LIVE_W,sx+sw)]):
-                                self.is_triggered = True
-                                self.last_start_time = now
-                                self.status_message = "Action Triggered"
+                            if ACTION_TRIGGER == "start_roi_first_motion":
+                                if not self.last_start_time and self.roi_start.detect_motion(gray[max(0,sy):min(LIVE_H,sy+sh), max(0,sx):min(LIVE_W,sx+sw)]):
+                                    self.is_triggered = True
+                                    self.last_start_time = now
+                                    self.status_message = "Action Triggered"
+                            elif ACTION_TRIGGER == "start_roi_last_motion":
+                                if self.roi_start.detect_motion(gray[max(0,sy):min(LIVE_H,sy+sh), max(0,sx):min(LIVE_W,sx+sw)]):
+                                    self.is_triggered = True
+                                    self.last_start_time = now
+                                    self.status_message = "Action Triggered"
 
                             if self.is_triggered:
                                 ex, ey, ew, eh = self.roi_end.x, self.roi_end.y, self.roi_end.w, self.roi_end.h
