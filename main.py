@@ -349,96 +349,99 @@ if __name__ == "__main__":
     cv2.setMouseCallback("Live Feed", mouse_event)
     
     ram_text, last_sys_update = "RAM: Init...", 0
-    while True:
-        if time.time() - last_sys_update > 1.0:
-            ram = psutil.virtual_memory()
-            ram_text = f"RAM: {ram.used / (1024**3):.1f}GB"
-            last_sys_update = time.time()
+    try:
+        while True:
+            if time.time() - last_sys_update > 1.0:
+                ram = psutil.virtual_memory()
+                ram_text = f"RAM: {ram.used / (1024**3):.1f}GB"
+                last_sys_update = time.time()
 
-        img = system.get_latest()
-        if img is not None:
-            roi_start.draw(img); roi_end.draw(img)
-            color = (0, 255, 255) if not system.is_active else (255, 255, 0)
-            cv2.putText(img, system.status_message, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-            if system.cooldown_message:
-                cv2.putText(img, system.cooldown_message, (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
-            cv2.putText(img, ram_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            cv2.imshow("Live Feed", img)
+            img = system.get_latest()
+            if img is not None:
+                roi_start.draw(img); roi_end.draw(img)
+                color = (0, 255, 255) if not system.is_active else (255, 255, 0)
+                cv2.putText(img, system.status_message, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                if system.cooldown_message:
+                    cv2.putText(img, system.cooldown_message, (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
+                cv2.putText(img, ram_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                cv2.imshow("Live Feed", img)
 
-        if system.playback_clip:
-            cv2.namedWindow("Auto Playback", cv2.WINDOW_NORMAL)
-            cv2.resizeWindow("Auto Playback", CAP_W, CAP_H) 
-            clip = system.playback_clip
-            
-            if not system.playback_paused:
-                elapsed_needed = (clip[system.playback_idx][0] - clip[0][0]) / system.playback_current_speed
-                if (time.perf_counter() - system.playback_start_wall) >= elapsed_needed:
-                    system.playback_idx += 1
-                    if system.playback_idx >= len(clip):
-                        system.playback_idx = 0
-                        # Only cycle if manual override hasn't been used
-                        if not system.manual_speed_override:
-                            system.playback_speed_idx = (system.playback_speed_idx + 1) % len(PLAYBACK_LOOP)
-                            system.playback_current_speed = PLAYBACK_LOOP[system.playback_speed_idx]
-                        system.playback_start_wall = time.perf_counter()
+            if system.playback_clip:
+                cv2.namedWindow("Auto Playback", cv2.WINDOW_NORMAL)
+                cv2.resizeWindow("Auto Playback", CAP_W, CAP_H) 
+                clip = system.playback_clip
+                
+                if not system.playback_paused:
+                    elapsed_needed = (clip[system.playback_idx][0] - clip[0][0]) / system.playback_current_speed
+                    if (time.perf_counter() - system.playback_start_wall) >= elapsed_needed:
+                        system.playback_idx += 1
+                        if system.playback_idx >= len(clip):
+                            system.playback_idx = 0
+                            # Only cycle if manual override hasn't been used
+                            if not system.manual_speed_override:
+                                system.playback_speed_idx = (system.playback_speed_idx + 1) % len(PLAYBACK_LOOP)
+                                system.playback_current_speed = PLAYBACK_LOOP[system.playback_speed_idx]
+                            system.playback_start_wall = time.perf_counter()
 
-            idx = min(system.playback_idx, len(clip) - 1)
-            display_frame = clip[idx][1].copy()
-            status_txt = f"Speed: {system.playback_current_speed:.1f}x"
-            if system.manual_speed_override:
-                status_txt += " (Manual)"
+                idx = min(system.playback_idx, len(clip) - 1)
+                display_frame = clip[idx][1].copy()
+                status_txt = f"Speed: {system.playback_current_speed:.1f}x"
+                if system.manual_speed_override:
+                    status_txt += " (Manual)"
+                else:
+                    status_txt += " (Auto Loop)"
+                if system.playback_paused: status_txt += " [PAUSED]"
+                cv2.putText(display_frame, status_txt, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                cv2.imshow("Auto Playback", display_frame)
             else:
-                status_txt += " (Auto Loop)"
-            if system.playback_paused: status_txt += " [PAUSED]"
-            cv2.putText(display_frame, status_txt, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-            cv2.imshow("Auto Playback", display_frame)
-        else:
-            # If playback was reset, ensure window is closed
-            if cv2.getWindowProperty("Auto Playback", cv2.WND_PROP_VISIBLE) >= 1:
-                cv2.destroyWindow("Auto Playback")
+                # If playback was reset, ensure window is closed
+                if cv2.getWindowProperty("Auto Playback", cv2.WND_PROP_VISIBLE) >= 1:
+                    cv2.destroyWindow("Auto Playback")
 
-        key = cv2.waitKeyEx(1)
-        if key != -1:
-            key_8 = key & 0xFF
-            if key_8 == ord('q'): break
-            elif key_8 == ord('b'):
-                system.activate_capture()
-            elif key_8 == ord('e'): # End capture and reset to Setup
-                system.reset_to_setup()
-            elif key_8 == ord('s'):
-                if system.playback_clip:
-                    # Run saving in a background thread so it doesn't freeze the UI
-                    threading.Thread(target=save_playback_clip, args=(list(system.playback_clip),), daemon=True).start()
-            elif key_8 == ord('p'):
-                if system.playback_clip:
-                    system.playback_paused = not system.playback_paused
-                    if not system.playback_paused:
+            key = cv2.waitKeyEx(1)
+            if key != -1:
+                key_8 = key & 0xFF
+                if key_8 == ord('q'): break
+                elif key_8 == ord('b'):
+                    system.activate_capture()
+                elif key_8 == ord('e'): # End capture and reset to Setup
+                    system.reset_to_setup()
+                elif key_8 == ord('s'):
+                    if system.playback_clip:
+                        # Run saving in a background thread so it doesn't freeze the UI
+                        threading.Thread(target=save_playback_clip, args=(list(system.playback_clip),), daemon=True).start()
+                elif key_8 == ord('p'):
+                    if system.playback_clip:
+                        system.playback_paused = not system.playback_paused
+                        if not system.playback_paused:
+                            offset = (system.playback_clip[system.playback_idx][0] - system.playback_clip[0][0]) / system.playback_current_speed
+                            system.playback_start_wall = time.perf_counter() - offset
+                
+                # Speed Controls
+                elif key_8 == ord(','): # (<) Key
+                    if system.playback_clip:
+                        system.manual_speed_override = True
+                        system.playback_current_speed = max(PLAYBACK_SPEED_MIN, system.playback_current_speed - PLAYBACK_SPEED_CHG)
                         offset = (system.playback_clip[system.playback_idx][0] - system.playback_clip[0][0]) / system.playback_current_speed
                         system.playback_start_wall = time.perf_counter() - offset
-            
-            # Speed Controls
-            elif key_8 == ord(','): # (<) Key
-                if system.playback_clip:
-                    system.manual_speed_override = True
-                    system.playback_current_speed = max(PLAYBACK_SPEED_MIN, system.playback_current_speed - PLAYBACK_SPEED_CHG)
-                    offset = (system.playback_clip[system.playback_idx][0] - system.playback_clip[0][0]) / system.playback_current_speed
-                    system.playback_start_wall = time.perf_counter() - offset
-            elif key_8 == ord('.'): # (>) Key
-                if system.playback_clip:
-                    system.manual_speed_override = True
-                    system.playback_current_speed = min(PLAYBACK_SPEED_MAX, system.playback_current_speed + PLAYBACK_SPEED_CHG)
-                    offset = (system.playback_clip[system.playback_idx][0] - system.playback_clip[0][0]) / system.playback_current_speed
-                    system.playback_start_wall = time.perf_counter() - offset
+                elif key_8 == ord('.'): # (>) Key
+                    if system.playback_clip:
+                        system.manual_speed_override = True
+                        system.playback_current_speed = min(PLAYBACK_SPEED_MAX, system.playback_current_speed + PLAYBACK_SPEED_CHG)
+                        offset = (system.playback_clip[system.playback_idx][0] - system.playback_clip[0][0]) / system.playback_current_speed
+                        system.playback_start_wall = time.perf_counter() - offset
 
-            # Frame Stepping
-            elif key == 2424832: # Left Arrow
-                if system.playback_clip:
-                    system.playback_paused = True
-                    system.playback_idx = (system.playback_idx - 1) % len(system.playback_clip)
-            elif key == 2555904: # Right Arrow
-                if system.playback_clip:
-                    system.playback_paused = True
-                    system.playback_idx = (system.playback_idx + 1) % len(system.playback_clip)
-
-    system.stop()
-    cv2.destroyAllWindows()
+                # Frame Stepping
+                elif key == 2424832: # Left Arrow
+                    if system.playback_clip:
+                        system.playback_paused = True
+                        system.playback_idx = (system.playback_idx - 1) % len(system.playback_clip)
+                elif key == 2555904: # Right Arrow
+                    if system.playback_clip:
+                        system.playback_paused = True
+                        system.playback_idx = (system.playback_idx + 1) % len(system.playback_clip)
+    finally:
+        print("\n[INFO] Cleaning up resources...")
++       system.stop()
++       cv2.destroyAllWindows()
++       print("[INFO] Shutdown complete.")

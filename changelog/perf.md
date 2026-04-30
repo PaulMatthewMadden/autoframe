@@ -35,8 +35,8 @@ Consider using multithreading to offload time-consuming tasks to separate thread
 Optimize image processing operations to reduce CPU usage. For example, you can use more efficient image processing algorithms or libraries, or optimize the code for better performance.
 
 ### P6 : Implement Resource Cleanup
-- [ ] Started
-- [ ] Completed
+- [x] Started
+- [x] Completed
 
 Ensure that resources are properly cleaned up when they are no longer needed. For example, release the video capture object when the script is stopped.
 
@@ -54,10 +54,10 @@ If available, consider using hardware acceleration to offload computationally in
 
 ## Completed
 
-### [Rec Number] : [Brief Description]
+### P6 : Implement Resource Cleanup
 
-Date Completed: [Date]
+Date Completed: [2026-04-30]
 
 #### Results
 
-[Details]
+- Added try/finally to main method.
