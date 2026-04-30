@@ -4,15 +4,15 @@ All recommendations (Recs) for bug fixes are prefixed with a 'B'.
 
 ## Recs
 
-### [Rec Number and Description]
+### [Rec Number] : [Brief Description]
 - [ ] Started
-- [ ]Completed
+- [ ] Completed
 
 [Details]
 
 ## Completed
 
-### [Rec Number and Brief Description]
+### [Rec Number] : [Brief Description]
 
 Date Completed: [Date]
 

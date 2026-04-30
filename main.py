@@ -318,21 +318,27 @@ if __name__ == "__main__":
         print("\nERROR: No cameras found.")
         sys.exit()
 
-    print("\n" + "="*40)
-    print("        CAMERA SELECTION MENU")
-    print("="*40)
-    for i, name in enumerate(device_names):
-        print(f" [{i}] {name}")
-    print("="*40)
-    
-    try:
-        choice = int(input("\nSelect camera number: "))
-        selected_index = choice 
-        selected_name = device_names[choice]
-    except (ValueError, IndexError):
-        print("Invalid choice. Defaulting to [0].")
+    if len(device_names) == 1:
+        # Auto-select single camera
         selected_index = 0
         selected_name = device_names[0]
+        print(f"\n[INFO] Auto-selected camera: [{selected_index}] {selected_name}")
+    else:
+        print("\n" + "="*40)
+        print("        CAMERA SELECTION MENU")
+        print("="*40)
+        for i, name in enumerate(device_names):
+            print(f" [{i}] {name}")
+        print("="*40)
+        
+        try:
+            choice = int(input("\nSelect camera number: "))
+            selected_index = choice 
+            selected_name = device_names[choice]
+        except (ValueError, IndexError):
+            print("Invalid choice. Defaulting to [0].")
+            selected_index = 0
+            selected_name = device_names[0]
 
     system = POCSystem(selected_index, selected_name, roi_start, roi_end).start()
     time.sleep(1.5)
